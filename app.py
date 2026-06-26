@@ -1,5 +1,5 @@
 """
-DDL 规划助手 - Flask 后端
+规划助手 - Flask 后端
 包含 8 个 Agent：课程表Agent / 作息分析Agent / 任务拆解Agent / 排期Agent /
                  优先级Agent / 冲突检测Agent / 休息插入Agent / 汇总Agent
 """
@@ -1367,7 +1367,7 @@ def chat():
         f"- id={t['id']} {t['name']} 截止: {t['due_date']}" for t in tasks
     ) or "当前无任务"
 
-    system_prompt = f"""你是一个 DDL 规划助手，擅长理解自然语言并操作任务与排期。
+    system_prompt = f"""你是一个规划助手，擅长理解自然语言并操作任务与排期。
 {task_context}
 
 用户会用中文描述：调整时间、增删步骤、重新排期、拆解任务。
@@ -1499,6 +1499,6 @@ def summary_endpoint():
 # ============================================================
 
 if __name__ == "__main__":
-    print(f"DDL 规划助手启动中... 数据库: {DB_PATH}")
+    print(f"规划助手启动中... 数据库: {DB_PATH}")
     print("手机访问请使用本机局域网 IP，例如 http://192.168.x.x:9090")
     app.run(host="0.0.0.0", port=9090, debug=False)

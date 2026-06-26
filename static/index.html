@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>DDL 规划助手</title>
+<title>规划助手</title>
 <style>
 :root{
   --primary:#4F46E5; --primary-light:#6366F1; --bg:#F8FAFC; --card:#FFFFFF;
@@ -227,7 +227,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 <button class="chat-fab" id="chat-fab">💬</button>
 <div class="chat-panel" id="chat-panel">
   <div class="chat-box">
-    <div class="chat-head"><span>💬 DDL 规划助手</span><button class="chat-close" id="chat-close">×</button></div>
+    <div class="chat-head"><span>💬 规划助手</span><button class="chat-close" id="chat-close">×</button></div>
     <div class="chat-body" id="chat-body"></div>
     <div class="chat-foot">
       <input type="text" id="chat-input" placeholder="说点什么：帮我重排任务 1、添加一个步骤...">
@@ -721,7 +721,7 @@ async function loadChatHistory(){
   const list=await jsonReq("/api/chat/history",{method:"GET"});
   $("#chat-body").innerHTML="";
   (list||[]).forEach(m=>appendChat(m.role,m.content));
-  if(!list.length) appendChat("ai","你好！我是 DDL 规划助手，可以帮你：\n· 重排某个任务的步骤\n· 添加/删除步骤\n· 调整截止日期\n· 新建任务\n试试对我说：「重排任务 1」");
+  if(!list.length) appendChat("ai","你好！我是规划助手，可以帮你：\n· 重排某个任务的步骤\n· 添加/删除步骤\n· 调整截止日期\n· 新建任务\n试试对我说：「重排任务 1」");
 }
 
 function refreshAll(){ renderWeekCalendar(); renderToday(); renderTasks(); renderCourses(); renderPomoStats(); renderPomoTime(); }

@@ -196,6 +196,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
       <div style="margin-top:12px"><button class="btn" id="btn-save-routine">保存作息</button></div>
     </div>
     <div class="card" style="margin-top:12px">
+      <div class="section-title" style="margin-top:0"><span>📅 学期设置</span><span class="muted" id="semester-week-info"></span></div>
+      <div class="settings-row"><span class="sr-label">学期开始日期</span><input type="date" id="sem-start"></div>
+      <div class="settings-row"><span class="sr-label">手动设置当前周</span><input type="number" id="sem-week" min="1" max="30" value="1"></div>
+      <div style="font-size:12px;color:var(--sub);padding:8px 4px;border-top:1px solid var(--border);margin-top:8px;">
+        <div>• 设置学期开始日期后，系统会自动计算当前周数</div>
+        <div>• 手动设置周数优先级更高（覆盖自动计算）</div>
+        <div>• <span id="exam-week-tip" style="display:none;color:var(--warn)">⚠️ 当前为考试周（>16周），课程硬约束已取消</span></div>
+      </div>
+      <div style="margin-top:12px"><button class="btn" id="btn-save-semester">保存学期设置</button></div>
+    </div>
+    <div class="card" style="margin-top:12px">
       <div class="section-title" style="margin-top:0"><span>📚 课程表</span><span class="muted" id="course-count"></span></div>
       <div id="course-list"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -274,6 +285,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
         <div class="form-group"><label>开始</label><input type="time" id="c-start" value="08:00"></div>
         <div class="form-group"><label>结束</label><input type="time" id="c-end" value="09:40"></div>
       </div>
+      <div class="form-row">
+        <div class="form-group"><label>开始周</label><input type="number" id="c-start-week" min="1" max="30" value="1" style="width:70px"></div>
+        <div class="form-group"><label>结束周</label><input type="number" id="c-end-week" min="1" max="30" value="16" style="width:70px"></div>
+        <div style="flex:1;font-size:12px;color:var(--sub);padding-top:6px;">留空为1-16周整学期</div>
+      </div>
       <div class="form-group"><label>地点（可选）</label><input type="text" id="c-loc" placeholder="教1-201"></div>
     </div>
     <div class="modal-foot"><button class="btn btn-secondary" data-close>取消</button><button class="btn" id="btn-save-course">保存</button></div>
@@ -285,8 +301,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
     <div class="modal-head"><span>📚 批量导入课程</span><button class="x" data-close>×</button></div>
     <div class="modal-body">
       <div class="form-group"><label>课程名称</label><input type="text" id="bc-name" placeholder="例如：高等数学"></div>
+      <div class="form-row">
+        <div class="form-group"><label>上课周数（默认1-16周）</label></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>开始周</label><input type="number" id="bc-start-week" min="1" max="30" value="1" style="width:70px"></div>
+        <div class="form-group"><label>结束周</label><input type="number" id="bc-end-week" min="1" max="30" value="16" style="width:70px"></div>
+      </div>
       <div class="form-group"><label>上课时段（可添加多个）</label><div id="bc-slots"></div>
         <button class="btn btn-secondary" id="bc-add-slot" style="margin-top:8px">+ 增加一个时段</button>
+      </div>
+      <div class="form-group"><label style="font-size:12px;color:var(--sub)">批量格式示例：</label>
+        <div style="font-size:12px;color:var(--sub)">• 高数：周一1-2节（3-12周）</div>
+        <div style="font-size:12px;color:var(--sub)">• 英语：周二3-4节（1-16周）</div>
       </div>
     </div>
     <div class="modal-foot"><button class="btn btn-secondary" data-close>取消</button><button class="btn" id="btn-save-batch">全部保存</button></div>
@@ -380,18 +407,21 @@ $("#btn-save-task").addEventListener("click",async ()=>{
   else notify("保存失败","error");
 });
 
-function openCourseModal(){ $("#c-name").value=""; $("#c-start").value="08:00"; $("#c-end").value="09:40"; $("#c-loc").value=""; showModal("modal-course"); }
+function openCourseModal(){ $("#c-name").value=""; $("#c-start").value="08:00"; $("#c-end").value="09:40"; $("#c-loc").value=""; $("#c-start-week").value=1; $("#c-end-week").value=16; showModal("modal-course"); }
 $("#btn-add-course").addEventListener("click",openCourseModal);
 $("#btn-save-course").addEventListener("click",async ()=>{
   const name = $("#c-name").value.trim(); if(!name){ notify("请填写课程名","error"); return; }
-  await jsonReq("/api/courses",{method:"POST",body:JSON.stringify({name,day_of_week:parseInt($("#c-day").value),start_time:$("#c-start").value,end_time:$("#c-end").value,location:$("#c-loc").value})});
+  const sw = parseInt($("#c-start-week").value) || 1;
+  const ew = parseInt($("#c-end-week").value) || 16;
+  const weeks = `${sw}-${ew}`;
+  await jsonReq("/api/courses",{method:"POST",body:JSON.stringify({name,day_of_week:parseInt($("#c-day").value),start_time:$("#c-start").value,end_time:$("#c-end").value,location:$("#c-loc").value,weeks})});
   notify("已添加课程"); closeModal("modal-course"); refreshAll();
 });
 
 let batchSlots=[];
 function openBatchCourseModal(){
   batchSlots=[{day_of_week:1,start_time:"08:00",end_time:"09:40",location:""},{day_of_week:3,start_time:"10:00",end_time:"11:40",location:""}];
-  $("#bc-name").value=""; renderBatchSlots(); showModal("modal-batch-course");
+  $("#bc-name").value=""; $("#bc-start-week").value=1; $("#bc-end-week").value=16; renderBatchSlots(); showModal("modal-batch-course");
 }
 function renderBatchSlots(){
   const box=$("#bc-slots"); box.innerHTML="";
@@ -417,7 +447,10 @@ function renderBatchSlots(){
 $("#bc-add-slot").addEventListener("click",()=>{batchSlots.push({day_of_week:1,start_time:"08:00",end_time:"09:40",location:""});renderBatchSlots();});
 $("#btn-save-batch").addEventListener("click",async ()=>{
   const name=$("#bc-name").value.trim(); if(!name){ notify("请填写课程名","error"); return; }
-  await jsonReq("/api/courses/batch",{method:"POST",body:JSON.stringify({items:[{name,days:batchSlots}]})});
+  const sw=parseInt($("#bc-start-week").value)||1;
+  const ew=parseInt($("#bc-end-week").value)||16;
+  const weeks=`${sw}-${ew}`;
+  await jsonReq("/api/courses/batch",{method:"POST",body:JSON.stringify({items:[{name,weeks,days:batchSlots}]})});
   notify("批量导入成功"); closeModal("modal-batch-course"); refreshAll();
 });
 
@@ -474,8 +507,9 @@ async function renderToday(){
     const row=document.createElement("div");
     if(it.type==="course"){
       const c=it.c; row.className="today-item is-course";
+      const weeks=c.weeks?" · "+c.weeks:"";
       row.innerHTML = `<div style="width:34px;text-align:center;font-size:20px">📖</div>
-        <div class="info"><div class="title">${c.name}</div><div class="meta">${c.start_time} - ${c.end_time} · ${c.location||"未填"}</div></div>
+        <div class="info"><div class="title">${c.name}</div><div class="meta">${c.start_time} - ${c.end_time} · ${c.location||"未填"}${weeks}</div></div>
         <span class="badge badge-green">课程</span>`;
     } else {
       const s=it.s;
@@ -632,6 +666,24 @@ $("#btn-save-routine").addEventListener("click",async ()=>{
   notify("作息已保存");
 });
 
+async function loadSemester(){
+  const s=await jsonReq("/api/semester",{method:"GET"});
+  $("#sem-start").value=s.semester_start||"";
+  $("#sem-week").value=s.current_week||1;
+  const weekInfo=document.createElement("span");
+  weekInfo.innerHTML=`当前周: ${s.computed_week}`;
+  $("#semester-week-info").innerHTML=weekInfo.outerHTML;
+  $("#exam-week-tip").style.display=s.is_exam_week?"block":"none";
+}
+$("#btn-save-semester").addEventListener("click",async ()=>{
+  await jsonReq("/api/semester",{method:"POST",body:JSON.stringify({
+    semester_start:$("#sem-start").value,
+    current_week:parseInt($("#sem-week").value)||1,
+  })});
+  notify("学期设置已保存");
+  loadSemester();
+});
+
 let pomoState={duration:25*60,remaining:25*60,running:false,interval:null,taskId:null,stepId:null,label:"自由专注"};
 function renderPomoTime(){
   const m=Math.floor(pomoState.remaining/60), s=pomoState.remaining%60;
@@ -724,7 +776,7 @@ async function loadChatHistory(){
   if(!list.length) appendChat("ai","你好！我是规划助手，可以帮你：\n· 重排某个任务的步骤\n· 添加/删除步骤\n· 调整截止日期\n· 新建任务\n试试对我说：「重排任务 1」");
 }
 
-function refreshAll(){ renderWeekCalendar(); renderToday(); renderTasks(); renderCourses(); renderPomoStats(); renderPomoTime(); }
+function refreshAll(){ renderWeekCalendar(); renderToday(); renderTasks(); renderCourses(); renderPomoStats(); renderPomoTime(); loadSemester(); }
 try{ if("Notification" in window && Notification.permission==="default") Notification.requestPermission(); }catch(e){}
 (async ()=>{ await loadRoutine(); refreshAll(); })();
 </script>

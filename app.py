@@ -49,6 +49,7 @@ def init_db():
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         location TEXT DEFAULT '',
+        weeks TEXT DEFAULT '1-16',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS routines (
@@ -61,7 +62,9 @@ def init_db():
         peak_start TEXT DEFAULT '09:00',
         peak_end TEXT DEFAULT '11:00',
         fixed_tasks TEXT DEFAULT '[]',
-        entertainment TEXT DEFAULT '20:00-21:00'
+        entertainment TEXT DEFAULT '20:00-21:00',
+        semester_start TEXT DEFAULT '',
+        current_week INTEGER DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +103,22 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """)
-    # 初始化一条作息记录
+    try:
+        c.execute("ALTER TABLE courses ADD COLUMN weeks TEXT DEFAULT '1-16'")
+    except Exception:
+        pass
+    try:
+        c.execute("UPDATE courses SET weeks='1-16' WHERE weeks IS NULL OR weeks='1-18'")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE routines ADD COLUMN semester_start TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE routines ADD COLUMN current_week INTEGER DEFAULT 1")
+    except Exception:
+        pass
     c.execute("SELECT COUNT(*) FROM routines")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO routines DEFAULT VALUES")
@@ -142,6 +160,62 @@ def today_str():
     return date.today().strftime("%Y-%m-%d")
 
 
+def is_week_active(weeks_str, current_week):
+    """判断当前周是否在课程周次范围内
+    
+    支持格式：
+    - "1-18"：连续周次
+    - "1-14,17-18"：非连续周次（逗号分隔多个范围）
+    - "5"：单周
+    """
+    if not weeks_str or not isinstance(current_week, int):
+        return True
+    try:
+        parts = weeks_str.replace("，", ",").split(",")
+        for part in parts:
+            part = part.strip()
+            if "-" in part:
+                start, end = part.split("-", 1)
+                start_w = int(start.strip())
+                end_w = int(end.strip())
+                if start_w <= current_week <= end_w:
+                    return True
+            else:
+                single_w = int(part)
+                if single_w == current_week:
+                    return True
+        return False
+    except Exception:
+        return True
+
+
+def get_current_week():
+    """获取当前周数：优先使用手动设置，否则根据学期开始日期计算"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT semester_start, current_week FROM routines ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return 1
+    d = dict(row)
+    manual_week = d.get("current_week")
+    semester_start = d.get("semester_start")
+    if manual_week and manual_week != 1:
+        return manual_week
+    if semester_start:
+        try:
+            start_date = dt.strptime(semester_start, "%Y-%m-%d").date()
+            today_date = date.today()
+            days_diff = (today_date - start_date).days
+            if days_diff >= 0:
+                computed_week = (days_diff // 7) + 1
+                return computed_week
+        except Exception:
+            pass
+    return manual_week or 1
+
+
 # ============================================================
 #                      8 个 Agent 类
 # ============================================================
@@ -150,7 +224,7 @@ class CourseAgent:
     """课程表 Agent：解析课表，输出指定日期的空闲时段"""
 
     @staticmethod
-    def get_courses_for_date(date_str):
+    def get_courses_for_date(date_str, current_week=None):
         d = dt.strptime(date_str, "%Y-%m-%d").date()
         day_of_week = d.weekday() + 1  # 1=周一
         conn = get_conn()
@@ -159,12 +233,18 @@ class CourseAgent:
             (day_of_week,)
         ).fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        courses = [dict(r) for r in rows]
+        if current_week is not None:
+            courses = [
+                c for c in courses
+                if is_week_active(c.get("weeks", "1-18"), current_week)
+            ]
+        return courses
 
     @staticmethod
-    def get_free_slots(date_str, start_time="07:00", end_time="23:00"):
+    def get_free_slots(date_str, start_time="07:00", end_time="23:00", current_week=None):
         """返回该日期的空闲时段列表（避开课程）"""
-        courses = CourseAgent.get_courses_for_date(date_str)
+        courses = CourseAgent.get_courses_for_date(date_str, current_week)
         occupied = [(to_min(c["start_time"]), to_min(c["end_time"])) for c in courses]
         occupied.sort()
         free = []
@@ -357,24 +437,26 @@ class SchedulingAgent:
     def schedule(self, task, steps, task_id=None):
         """对单个任务进行排期，忽略已排步骤"""
         tid = task_id or task.get("id") or "__single__"
-        result = self.schedule_multi([(task, steps, tid)])
+        current_week = get_current_week()
+        result = self.schedule_multi([(task, steps, tid)], current_week)
         return result.get(tid, [])
 
     # --------- 多任务整体调度 ---------
-    def schedule_multi(self, task_step_tuples):
+    def schedule_multi(self, task_step_tuples, current_week=1):
         """
         task_step_tuples: [(task_dict, steps_list, task_id), ...]
         task_dict 需要: due_date, type, priority(可选)
         steps_list: [{name, duration}]
         task_id: int 或 None
+        current_week: 当前周数，用于考试周模式判断
         返回: {task_id: [scheduled_step_dict, ...]}
         """
         wake, sleep = self.routine_agent.available_window()
         peak_s, peak_e = self.routine_agent.peak_window()
         peak_lo = to_min(peak_s)
         peak_hi = to_min(peak_e)
+        is_exam_week = current_week > 16
 
-        # 按优先级排序：PriorityAgent.score 高 -> 先排
         scored = []
         for task, steps, task_id in task_step_tuples:
             tid = task_id or task.get("id") or f"task_{len(scored)}"
@@ -385,18 +467,14 @@ class SchedulingAgent:
         result_map = {}
         for _score, tid, task, steps in scored:
             scheduled = self._schedule_one(
-                task, steps, tid, wake, sleep, peak_lo, peak_hi
+                task, steps, tid, wake, sleep, peak_lo, peak_hi, current_week
             )
-            # 先移除 _schedule_one 在内部登记的原始时间，
-            # 以便插入休息后用正确时间重新登记（避免顺延导致的时间冲突）
             d_list = list(self._used_slots.keys())
             for d in d_list:
                 self._used_slots[d] = [(s, e, t) for s, e, t in self._used_slots[d] if t != tid]
                 if not self._used_slots[d]:
                     del self._used_slots[d]
-            # 插入休息（可能顺延相邻步骤）
             with_break = BreakInsertAgent.insert_breaks(scheduled)
-            # 用最终时间重新登记 _used_slots（休息本身不计入占用）
             for s in with_break:
                 if s.get("is_break"):
                     continue
@@ -407,7 +485,7 @@ class SchedulingAgent:
             result_map[tid] = with_break
         return result_map
 
-    def _schedule_one(self, task, steps, task_id, wake, sleep, peak_lo, peak_hi):
+    def _schedule_one(self, task, steps, task_id, wake, sleep, peak_lo, peak_hi, current_week=1):
         if not steps:
             return []
         start = date.today()
@@ -421,19 +499,20 @@ class SchedulingAgent:
         days_left = (due - start).days + 1
         total_min = sum(int(s.get("duration", 30)) for s in steps)
 
-        # 按紧急程度决定每日占比
-        if days_left <= 3:
+        is_exam_week = current_week > 16
+
+        if is_exam_week:
+            ratio = 0.50
+        elif days_left <= 3:
             ratio = 0.40
         elif days_left <= 7:
             ratio = 0.30
         else:
             ratio = 0.20
 
-        # 估算每天允许分配给该任务的分钟数
         day_total = (to_min(sleep) - to_min(wake)) * ratio * 0.85
-        # 同科目一天不超过 120 分钟（软上限）
         soft_cap = max(day_total, 120)
-        soft_cap = min(soft_cap, 180)  # 绝对硬顶 180
+        soft_cap = min(soft_cap, 180)
 
         task_type_hard = {"考试", "项目"}
         is_hard = task.get("type") in task_type_hard
@@ -441,7 +520,7 @@ class SchedulingAgent:
         scheduled = []
         remaining = list(steps)
         day_cursor = start
-        max_extra = 30  # 允许顺延最多 30 天
+        max_extra = 30
         guard = 0
         while remaining:
             if guard > days_left + max_extra:
@@ -450,10 +529,12 @@ class SchedulingAgent:
             if day_cursor > due + timedelta(days=max_extra):
                 break
             date_str = day_cursor.strftime("%Y-%m-%d")
-            free_slots = self.course_agent.get_free_slots(date_str, wake, sleep)
+            if is_exam_week:
+                free_slots = [(to_min(wake), to_min(sleep))]
+            else:
+                free_slots = self.course_agent.get_free_slots(date_str, wake, sleep, current_week)
             fixed = self.routine_agent.fixed_slots_for_date(date_str)
             usable = self._subtract_fixed(free_slots, fixed)
-            # 同时减去已被更高优先级任务占用的时段
             usable = self._subtract_used(usable, date_str)
             if not usable:
                 day_cursor += timedelta(days=1)
@@ -717,10 +798,12 @@ def ai_analyze_image(base64_data):
 3. 开始时间 (start_time)：HH:MM 格式
 4. 结束时间 (end_time)：HH:MM 格式
 5. 地点 (location)
+6. 周数 (weeks)：格式为 "开始周-结束周"，如 "3-12" 表示第3-12周上课。
+   如果图片中有周次信息请提取，如"3-12周"、"1-14,17-18周"；如果图片未标注周次，默认返回 "1-16"。
 
 请严格只输出一个 JSON 数组，不要任何其他文字：
 [
-  {"name":"高等数学","day_of_week":1,"start_time":"08:00","end_time":"09:40","location":"教1-201"}
+  {"name":"高等数学","day_of_week":1,"start_time":"08:00","end_time":"09:40","location":"教1-201","weeks":"3-12"}
 ]
 """
     try:
@@ -778,14 +861,16 @@ def add_course():
     data = request.get_json(force=True) or {}
     if not data.get("name") or data.get("day_of_week") is None:
         return jsonify({"error": "缺少必填字段"}), 400
+    weeks = data.get("weeks", "1-16")
     conn = get_conn()
     conn.execute(
-        "INSERT INTO courses (name, day_of_week, start_time, end_time, location) VALUES (?,?,?,?,?)",
+        "INSERT INTO courses (name, day_of_week, start_time, end_time, location, weeks) VALUES (?,?,?,?,?,?)",
         (
             data["name"], int(data["day_of_week"]),
             data.get("start_time", "08:00"),
             data.get("end_time", "09:00"),
             data.get("location", ""),
+            weeks,
         ),
     )
     conn.commit()
@@ -795,19 +880,21 @@ def add_course():
 
 @app.route("/api/courses/batch", methods=["POST"])
 def batch_courses():
-    """批量导入：[{name, days:[{day_of_week, start_time, end_time, location}]}]"""
+    """批量导入：[{name, weeks, days:[{day_of_week, start_time, end_time, location}]}]"""
     data = request.get_json(force=True) or {}
     items = data.get("items") or []
     conn = get_conn()
     for it in items:
+        weeks = it.get("weeks", "1-16")
         for d in it.get("days", []):
             conn.execute(
-                "INSERT INTO courses (name, day_of_week, start_time, end_time, location) VALUES (?,?,?,?,?)",
+                "INSERT INTO courses (name, day_of_week, start_time, end_time, location, weeks) VALUES (?,?,?,?,?,?)",
                 (
                     it["name"], int(d["day_of_week"]),
                     d.get("start_time", "08:00"),
                     d.get("end_time", "09:00"),
                     d.get("location", ""),
+                    weeks,
                 ),
             )
     conn.commit()
@@ -837,19 +924,20 @@ def ai_import_course():
         return jsonify({"error": err, "raw": content}), 400
     parsed = parse_json_from_text(content)
     if not isinstance(parsed, list):
-        # 降级：让用户确认
         return jsonify({"parsed": [], "raw": content or "", "warning": "AI 未能解析为结构化数组，请人工确认"})
     conn = get_conn()
     for c in parsed:
         try:
+            weeks = c.get("weeks", "1-16")
             conn.execute(
-                "INSERT INTO courses (name, day_of_week, start_time, end_time, location) VALUES (?,?,?,?,?)",
+                "INSERT INTO courses (name, day_of_week, start_time, end_time, location, weeks) VALUES (?,?,?,?,?,?)",
                 (
                     str(c.get("name", "")),
                     int(c.get("day_of_week", 1)),
                     str(c.get("start_time", "08:00")),
                     str(c.get("end_time", "09:00")),
                     str(c.get("location", "")),
+                    weeks,
                 ),
             )
         except Exception:
@@ -894,6 +982,54 @@ def set_routines():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+@app.route("/api/semester", methods=["GET"])
+def get_semester():
+    """获取学期设置和当前周数"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT semester_start, current_week FROM routines ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"semester_start": "", "current_week": 1, "computed_week": 1})
+    d = dict(row)
+    computed_week = 1
+    if d.get("semester_start"):
+        try:
+            start_date = dt.strptime(d["semester_start"], "%Y-%m-%d").date()
+            days_diff = (date.today() - start_date).days
+            if days_diff >= 0:
+                computed_week = (days_diff // 7) + 1
+        except Exception:
+            pass
+    return jsonify({
+        "semester_start": d.get("semester_start", ""),
+        "current_week": d.get("current_week", 1),
+        "computed_week": computed_week,
+        "is_exam_week": computed_week > 16,
+    })
+
+
+@app.route("/api/semester", methods=["POST"])
+def set_semester():
+    """设置学期开始日期或手动设置当前周数"""
+    data = request.get_json(force=True) or {}
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM routines ORDER BY id DESC LIMIT 1").fetchone()
+    if row:
+        conn.execute(
+            "UPDATE routines SET semester_start=?, current_week=? WHERE id=?",
+            (
+                data.get("semester_start", ""),
+                data.get("current_week", 1),
+                row["id"],
+            ),
+        )
+    conn.commit()
+    conn.close()
+    return get_semester()
 
 
 # ------- 任务 -------
@@ -1005,7 +1141,8 @@ def add_task():
                 ]
             tuples.append((td, broken, tid))
         scheduler = SchedulingAgent()
-        result_map = scheduler.schedule_multi(tuples)
+        current_week = get_current_week()
+        result_map = scheduler.schedule_multi(tuples, current_week)
 
         # 先清除所有未完成任务的旧步骤
         for td, _, _t in tuples:
@@ -1174,7 +1311,8 @@ def replan_task(tid):
         tuples.append((td, broken, td["id"]))
 
     scheduler = SchedulingAgent()
-    result_map = scheduler.schedule_multi(tuples)
+    current_week = get_current_week()
+    result_map = scheduler.schedule_multi(tuples, current_week)
 
     # 删除所有未完成步骤
     for td, _, _t in tuples:
@@ -1269,7 +1407,8 @@ def calendar_view():
 
 @app.route("/api/today", methods=["GET"])
 def today_summary():
-    t = today_str()
+    t = request.args.get("date", today_str())
+    current_week = get_current_week()
     conn = get_conn()
     rows = conn.execute(
         """SELECT ts.*, t.name AS task_name, t.due_date AS task_due, t.type AS task_type, t.id AS task_id
@@ -1278,7 +1417,7 @@ def today_summary():
         (t,),
     ).fetchall()
     steps = [dict(r) for r in rows]
-    courses = CourseAgent.get_courses_for_date(t)
+    courses = CourseAgent.get_courses_for_date(t, current_week)
     total = sum(int(s["duration"]) for s in steps if not s.get("is_break"))
     done = sum(int(s["duration"]) for s in steps if s.get("completed") and not s.get("is_break"))
     conn.close()
@@ -1289,6 +1428,8 @@ def today_summary():
         "total_minutes": total,
         "completed_minutes": done,
         "progress": (done / total * 100) if total else 0,
+        "current_week": current_week,
+        "is_exam_week": current_week > 16,
     })
 
 
